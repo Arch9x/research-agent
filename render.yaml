@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: research-agent
+    runtime: go
+    buildCommand: go build -o bin/server ./cmd/server
+    startCommand: ./bin/server
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_BASE_URL
+        value: https://ollama.com/v1
+      - key: MODEL
+        value: deepseek-v4-flash:0731
+      - key: EXA_API_KEY
+        sync: false
+      - key: EXA_ENDPOINT
+        value: https://api.exa.ai/search
+      - key: EXA_NUM_RESULTS
+        value: "8"
+      - key: MAX_SEARCHES
+        value: "8"
+      - key: MAX_PAGES_READ
+        value: "10"
+      - key: MAX_RESEARCH_TIME_SECONDS
+        value: "300"
+      - key: MIN_SOURCES
+        value: "3"
+      - key: MIN_DOMAINS
+        value: "2"
+      - key: REPORTS_DIR
+        value: reports
