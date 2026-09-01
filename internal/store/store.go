@@ -25,7 +25,13 @@ type Store struct {
 
 func New(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("create reports dir: %w", err)
+		// Fall back to a writable temp dir (e.g. read-only filesystems on
+		// some hosting platforms).
+		fallback := filepath.Join(os.TempDir(), "research-agent-reports")
+		if ferr := os.MkdirAll(fallback, 0o755); ferr != nil {
+			return nil, fmt.Errorf("create reports dir %q: %w (fallback %q: %v)", dir, err, fallback, ferr)
+		}
+		dir = fallback
 	}
 	return &Store{dir: dir}, nil
 }
