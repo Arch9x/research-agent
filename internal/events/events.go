@@ -26,31 +26,41 @@ type Event struct {
 	Data    any    `json:"data,omitempty"`
 }
 
-// Hub fans out events to all connected SSE clients.
+// Hub fans out events to SSE clients subscribed to a specific session.
 type Hub struct {
 	mu      sync.Mutex
-	clients map[chan []byte]struct{}
+	clients map[string]map[chan []byte]struct{}
 }
 
 func NewHub() *Hub {
-	return &Hub{clients: make(map[chan []byte]struct{})}
+	return &Hub{clients: make(map[string]map[chan []byte]struct{})}
 }
 
-func (h *Hub) Subscribe() chan []byte {
+// Subscribe registers a channel for a session and returns it.
+func (h *Hub) Subscribe(sessionID string) chan []byte {
 	ch := make(chan []byte, 64)
 	h.mu.Lock()
-	h.clients[ch] = struct{}{}
+	if h.clients[sessionID] == nil {
+		h.clients[sessionID] = make(map[chan []byte]struct{})
+	}
+	h.clients[sessionID][ch] = struct{}{}
 	h.mu.Unlock()
 	return ch
 }
 
-func (h *Hub) Unsubscribe(ch chan []byte) {
+func (h *Hub) Unsubscribe(sessionID string, ch chan []byte) {
 	h.mu.Lock()
-	delete(h.clients, ch)
+	if m := h.clients[sessionID]; m != nil {
+		delete(m, ch)
+		if len(m) == 0 {
+			delete(h.clients, sessionID)
+		}
+	}
 	h.mu.Unlock()
 }
 
-func (h *Hub) Publish(ev Event) {
+// Publish sends an event only to clients subscribed to the given session.
+func (h *Hub) Publish(sessionID string, ev Event) {
 	data, err := json.Marshal(ev)
 	if err != nil {
 		return
@@ -58,7 +68,7 @@ func (h *Hub) Publish(ev Event) {
 	msg := fmt.Sprintf("data: %s\n\n", data)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for ch := range h.clients {
+	for ch := range h.clients[sessionID] {
 		select {
 		case ch <- []byte(msg):
 		default:
@@ -66,42 +76,42 @@ func (h *Hub) Publish(ev Event) {
 	}
 }
 
-func (h *Hub) Status(msg string) {
-	h.Publish(Event{Type: TypeStatus, Message: msg})
+func (h *Hub) Status(sessionID, msg string) {
+	h.Publish(sessionID, Event{Type: TypeStatus, Message: msg})
 }
 
-func (h *Hub) Search(query string) {
-	h.Publish(Event{Type: TypeSearch, Message: query})
+func (h *Hub) Search(sessionID, query string) {
+	h.Publish(sessionID, Event{Type: TypeSearch, Message: query})
 }
 
-func (h *Hub) Read(url string) {
-	h.Publish(Event{Type: TypeRead, Message: url})
+func (h *Hub) Read(sessionID, url string) {
+	h.Publish(sessionID, Event{Type: TypeRead, Message: url})
 }
 
-func (h *Hub) Finding(msg string) {
-	h.Publish(Event{Type: TypeFinding, Message: msg})
+func (h *Hub) Finding(sessionID, msg string) {
+	h.Publish(sessionID, Event{Type: TypeFinding, Message: msg})
 }
 
-func (h *Hub) Question(q string) {
-	h.Publish(Event{Type: TypeQuestion, Message: q})
+func (h *Hub) Question(sessionID, q string) {
+	h.Publish(sessionID, Event{Type: TypeQuestion, Message: q})
 }
 
-func (h *Hub) Report(md string) {
-	h.Publish(Event{Type: TypeReport, Data: md})
+func (h *Hub) Report(sessionID, md string) {
+	h.Publish(sessionID, Event{Type: TypeReport, Data: md})
 }
 
-func (h *Hub) Error(msg string) {
-	h.Publish(Event{Type: TypeError, Message: msg})
+func (h *Hub) Error(sessionID, msg string) {
+	h.Publish(sessionID, Event{Type: TypeError, Message: msg})
 }
 
-func (h *Hub) Done() {
-	h.Publish(Event{Type: TypeDone})
+func (h *Hub) Done(sessionID string) {
+	h.Publish(sessionID, Event{Type: TypeDone})
 }
 
-func (h *Hub) Clarify(questions []string) {
-	h.Publish(Event{Type: TypeClarify, Data: questions})
+func (h *Hub) Clarify(sessionID string, questions []string) {
+	h.Publish(sessionID, Event{Type: TypeClarify, Data: questions})
 }
 
-func (h *Hub) Brief(brief string) {
-	h.Publish(Event{Type: TypeBrief, Message: brief})
+func (h *Hub) Brief(sessionID, brief string) {
+	h.Publish(sessionID, Event{Type: TypeBrief, Message: brief})
 }

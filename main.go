@@ -152,12 +152,17 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
+	sid := r.URL.Query().Get("session")
+	if sid == "" {
+		http.Error(w, "session query param required", http.StatusBadRequest)
+		return
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	ch := s.hub.Subscribe()
-	defer s.hub.Unsubscribe(ch)
+	ch := s.hub.Subscribe(sid)
+	defer s.hub.Unsubscribe(sid, ch)
 
 	ctx := r.Context()
 	for {
@@ -204,16 +209,16 @@ func (s *server) runResearch(id string, sess *research.Session) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(s.cfg.MaxResearchTime)*time.Second+2*time.Minute)
 	defer cancel()
 
-	s.hub.Status("Начинаю исследование: " + sess.Topic)
+	s.hub.Status(id, "Начинаю исследование: "+sess.Topic)
 
 	// Phase 1: clarifying questions (one round of 2-4 questions).
 	history := []string{}
 	questions, err := s.clar.Clarify(ctx, sess.Topic, history)
 	if err != nil {
-		s.hub.Error("Не удалось сформулировать вопросы: " + err.Error())
+		s.hub.Error(id, "Не удалось сформулировать вопросы: "+err.Error())
 	} else if len(questions) > 0 {
 		sess.Questions = questions
-		s.hub.Clarify(questions)
+		s.hub.Clarify(id, questions)
 		// Wait for answers.
 		answers := make([]string, 0, len(questions))
 		for range questions {
@@ -221,7 +226,7 @@ func (s *server) runResearch(id string, sess *research.Session) {
 			case ans := <-sess.AnswerCh:
 				answers = append(answers, ans)
 			case <-ctx.Done():
-				s.hub.Error("Таймаут ожидания ответов.")
+				s.hub.Error(id, "Таймаут ожидания ответов.")
 				return
 			}
 		}
@@ -238,22 +243,22 @@ func (s *server) runResearch(id string, sess *research.Session) {
 	// Phase 2: build research brief from topic + answers.
 	brief, err := s.buildBrief(ctx, sess.Topic, history)
 	if err != nil {
-		s.hub.Error("Не удалось составить бриф: " + err.Error())
+		s.hub.Error(id, "Не удалось составить бриф: "+err.Error())
 		brief = sess.Topic
 	}
 	sess.Brief = brief
-	s.hub.Brief(brief)
+	s.hub.Brief(id, brief)
 
 	// Phase 3: research loop.
 	summary, err := s.res.Run(ctx, sess)
 	if err != nil {
-		s.hub.Error("Ошибка исследования: " + err.Error())
+		s.hub.Error(id, "Ошибка исследования: "+err.Error())
 	}
 
 	// Phase 4: report.
 	report, err := s.repor.Write(ctx, sess)
 	if err != nil {
-		s.hub.Error("Ошибка написания отчёта: " + err.Error())
+		s.hub.Error(id, "Ошибка написания отчёта: "+err.Error())
 		report = "## Отчёт\n\nНе удалось написать отчёт: " + err.Error()
 	}
 
@@ -265,12 +270,12 @@ func (s *server) runResearch(id string, sess *research.Session) {
 		Markdown:  report,
 	}
 	if err := s.store.Save(rep); err != nil {
-		s.hub.Error("Не удалось сохранить отчёт: " + err.Error())
+		s.hub.Error(id, "Не удалось сохранить отчёт: "+err.Error())
 	}
 
-	s.hub.Report(report)
-	s.hub.Status("Исследование завершено. Итог: " + summary)
-	s.hub.Done()
+	s.hub.Report(id, report)
+	s.hub.Status(id, "Исследование завершено. Итог: "+summary)
+	s.hub.Done(id)
 }
 
 func (s *server) buildBrief(ctx context.Context, topic string, history []string) (string, error) {
@@ -411,7 +416,7 @@ async function start() {
 }
 
 function connectSSE() {
-  const es = new EventSource('/api/events');
+  const es = new EventSource('/api/events?session=' + encodeURIComponent(sessionId));
   es.onmessage = (e) => {
     const ev = JSON.parse(e.data);
     switch (ev.type) {

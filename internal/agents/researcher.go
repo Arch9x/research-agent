@@ -39,6 +39,7 @@ type researcherTools struct {
 	hub   *events.Hub
 	sess  *research.Session
 	llm   *llm.Client
+	sid   string
 }
 
 // Researcher runs the tool-calling research loop.
@@ -55,7 +56,7 @@ func NewResearcher(exa *tools.ExaClient, hub *events.Hub, llm *llm.Client) *Rese
 // Run executes the research loop for a session until limits are hit or the
 // agent finishes. Returns the final summary from the agent.
 func (r *Researcher) Run(ctx context.Context, sess *research.Session) (string, error) {
-	rt := &researcherTools{exa: r.exa, hub: r.hub, sess: sess, llm: r.llm}
+	rt := &researcherTools{exa: r.exa, hub: r.hub, sess: sess, llm: r.llm, sid: sess.ID}
 
 	params := openai.ChatCompletionNewParams{
 		Model: openai.ChatModel(r.llm.Model()),
@@ -127,11 +128,11 @@ func (r *Researcher) Run(ctx context.Context, sess *research.Session) (string, e
 
 	for {
 		if sess.Expired() {
-			r.hub.Status("⏱ Время исследования вышло, завершаю.")
+			r.hub.Status(rt.sid, "⏱ Время исследования вышло, завершаю.")
 			break
 		}
 		if sess.SearchesUsed() >= sess.MaxSearches {
-			r.hub.Status("Достигнут лимит поисков, завершаю.")
+			r.hub.Status(rt.sid, "Достигнут лимит поисков, завершаю.")
 			break
 		}
 
@@ -147,7 +148,7 @@ func (r *Researcher) Run(ctx context.Context, sess *research.Session) (string, e
 
 		if len(msg.ToolCalls) == 0 {
 			// No tool calls: agent is done (or just talking). Treat as finish.
-			r.hub.Status("Исследователь завершил работу.")
+			r.hub.Status(rt.sid, "Исследователь завершил работу.")
 			return msg.Content, nil
 		}
 
@@ -157,13 +158,13 @@ func (r *Researcher) Run(ctx context.Context, sess *research.Session) (string, e
 					Summary string `json:"summary"`
 				}
 				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
-				r.hub.Status("Исследователь завершил работу.")
+				r.hub.Status(rt.sid, "Исследователь завершил работу.")
 				return args.Summary, nil
 			}
 
 			result, err := rt.execute(ctx, tc)
 			if err != nil {
-				r.hub.Error(fmt.Sprintf("Инструмент %s: %v", tc.Function.Name, err))
+				r.hub.Error(rt.sid, fmt.Sprintf("Инструмент %s: %v", tc.Function.Name, err))
 				result = fmt.Sprintf("error: %v", err)
 			}
 			params.Messages = append(params.Messages, openai.ToolMessage(result, tc.ID))
@@ -183,7 +184,7 @@ func (rt *researcherTools) execute(ctx context.Context, tc openai.ChatCompletion
 			return "", fmt.Errorf("parse search args: %w", err)
 		}
 		rt.sess.IncSearch()
-		rt.hub.Search(args.Query)
+		rt.hub.Search(rt.sid, args.Query)
 
 		results, err := rt.exa.Search(ctx, args.Query)
 		if err != nil {
@@ -209,7 +210,7 @@ func (rt *researcherTools) execute(ctx context.Context, tc openai.ChatCompletion
 			return "Page read limit reached. Do not read more pages.", nil
 		}
 		rt.sess.MarkRead(args.URL)
-		rt.hub.Read(args.URL)
+		rt.hub.Read(rt.sid, args.URL)
 
 		text, err := tools.FetchPage(ctx, args.URL)
 		if err != nil {
@@ -224,7 +225,7 @@ func (rt *researcherTools) execute(ctx context.Context, tc openai.ChatCompletion
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 			return "", fmt.Errorf("parse ask args: %w", err)
 		}
-		rt.hub.Question(args.Question)
+		rt.hub.Question(rt.sid, args.Question)
 		ans, err := rt.sess.AskUser(ctx, args.Question)
 		if err != nil {
 			return "", err
@@ -245,7 +246,7 @@ func (rt *researcherTools) execute(ctx context.Context, tc openai.ChatCompletion
 			return "error: both fact and url are required", nil
 		}
 		rt.sess.AddFinding(args.Fact, args.URL)
-		rt.hub.Finding(args.Fact)
+		rt.hub.Finding(rt.sid, args.Fact)
 		return "Finding recorded.", nil
 
 	default:
