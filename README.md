@@ -67,7 +67,7 @@ go run ./cmd/server
 ## Структура
 
 ```
-cmd/server/            — HTTP-сервер, SSE, оркестрация
+main.go                — HTTP-сервер, SSE, оркестрация
 internal/config/       — конфигурация из env
 internal/llm/          — клиент openai-go
 internal/agents/       — clarifier.go, researcher.go, reporter.go

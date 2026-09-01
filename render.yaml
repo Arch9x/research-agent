@@ -2,7 +2,7 @@ services:
   - type: web
     name: research-agent
     runtime: go
-    buildCommand: go build -o bin/server ./cmd/server
+    buildCommand: go build -o bin/server .
     startCommand: ./bin/server
     envVars:
       - key: OPENAI_API_KEY
