@@ -26,9 +26,9 @@ type server struct {
 	store  *store.Store
 	llm    *llm.Client
 	exa    *tools.ExaClient
-	clar   *agents.Clarifier
-	res    *agents.Researcher
-	repor  *agents.Reporter
+	clar     *agents.Clarifier
+	res      *agents.Researcher
+	repor    *agents.Reporter
 
 	mu       sync.Mutex
 	sessions map[string]*research.Session
@@ -56,7 +56,7 @@ func main() {
 		llm:      llmClient,
 		exa:      exa,
 		clar:     agents.NewClarifier(llmClient),
-		res:      agents.NewResearcher(exa, hub, llmClient),
+		res:      agents.NewResearcher(exa, hub, llmClient, agents.NewPlanner(llmClient)),
 		repor:    agents.NewReporter(llmClient),
 		sessions: make(map[string]*research.Session),
 	}

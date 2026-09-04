@@ -16,11 +16,12 @@ type Finding struct {
 
 // Session holds the state of one research run.
 type Session struct {
-	ID        string
-	Topic     string
-	Brief     string
-	Questions []string
-	Answers   []string
+	ID         string
+	Topic      string
+	Brief      string
+	Synthesis  string
+	Questions  []string
+	Answers    []string
 
 	mu         sync.Mutex
 	Findings   []Finding

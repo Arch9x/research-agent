@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -15,90 +16,91 @@ import (
 	"research-agent/internal/tools"
 )
 
-const researcherSystemPrompt = `You are a web research agent. You investigate a research brief by searching the web, reading pages, and collecting facts with their source URLs.
+const leadSystemPrompt = `You are the lead research agent. You coordinate a team of sub-agents, each investigating one research line. You do NOT search or read pages yourself.
 
-You have four tools:
-1. search_tool(query) — search the web. Returns a list of results with title, url, and text.
-2. read_tool(url) — read a specific page. Returns the page text.
-3. add_finding_tool(fact, url) — record a factual finding tied to its source URL. Call this whenever you learn a concrete fact from a search result or a read page.
-4. ask_user_tool(question) — ask the user a question when you hit a fork you cannot decide yourself. Use sparingly.
+You have two tools:
+1. ask_user_tool(question) — ask the user a question when you hit a fork you cannot decide yourself. Use sparingly, before research lines start.
+2. finish_tool(summary) — finish planning and start the research lines. Provide a short summary of the plan.
 
 Rules:
-- Work like a careful human researcher: start broad, then go narrow to fill gaps.
-- After each search, decide what to read next. Read the most promising pages.
-- Record findings as you go: each finding is a short factual statement tied to its source URL. Do NOT invent facts — only state what the source actually says. Use add_finding_tool for every important fact.
-- If sources contradict each other, record BOTH sides as separate findings — do not smooth it over.
-- Keep searching until you have enough distinct sources (at least 3 sources from at least 2 different domains) or until you hit your limits.
-- If you have already read a page, do not read it again.
-- When you have gathered enough, call finish_tool with a short summary of what you found and what you could NOT find out.
+- If the brief has a fork you cannot decide yourself, ask the user first.
+- When you are ready, call finish_tool to start the research.
 
 Respond by calling tools. Do not write prose outside tool calls.`
 
-type researcherTools struct {
-	exa   *tools.ExaClient
-	hub   *events.Hub
-	sess  *research.Session
-	llm   *llm.Client
-	sid   string
-}
+const synthesisSystemPrompt = `You are the lead research agent. Sub-agents have investigated several research lines and returned their summaries. Synthesize them into one coherent picture.
 
-// Researcher runs the tool-calling research loop.
+Rules:
+- Summarize what is known across all lines.
+- Highlight contradictions explicitly: "X claims ..., but Y shows ...".
+- List what could NOT be determined (gaps).
+- Write in the same language as the research brief.
+- Be concrete and factual. Do not add external knowledge.`
+
+// Researcher runs the research: it plans lines, dispatches parallel
+// sub-agents, and synthesizes their summaries.
 type Researcher struct {
-	exa  *tools.ExaClient
-	hub  *events.Hub
-	llm  *llm.Client
+	exa     *tools.ExaClient
+	hub     *events.Hub
+	llm     *llm.Client
+	planner *Planner
 }
 
-func NewResearcher(exa *tools.ExaClient, hub *events.Hub, llm *llm.Client) *Researcher {
-	return &Researcher{exa: exa, hub: hub, llm: llm}
+func NewResearcher(exa *tools.ExaClient, hub *events.Hub, llm *llm.Client, planner *Planner) *Researcher {
+	return &Researcher{exa: exa, hub: hub, llm: llm, planner: planner}
 }
 
-// Run executes the research loop for a session until limits are hit or the
-// agent finishes. Returns the final summary from the agent.
+// Run executes the research pipeline for a session: pre-planning questions,
+// line planning, parallel line research, and synthesis. Returns the final
+// summary.
 func (r *Researcher) Run(ctx context.Context, sess *research.Session) (string, error) {
-	rt := &researcherTools{exa: r.exa, hub: r.hub, sess: sess, llm: r.llm, sid: sess.ID}
+	// Phase 1: optional pre-planning question (ask_user_tool / finish_tool).
+	if err := r.prePlan(ctx, sess); err != nil {
+		return "", err
+	}
 
+	// Phase 2: plan research lines.
+	lines, err := r.planner.Plan(ctx, sess.Brief)
+	if err != nil {
+		r.hub.Error(sess.ID, "Не удалось разбить на линии: "+err.Error())
+	}
+	if len(lines) == 0 {
+		// Fallback: one line covering the whole brief.
+		lines = []Line{{Title: sess.Topic, Question: sess.Brief}}
+	}
+	titles := make([]string, len(lines))
+	for i, l := range lines {
+		titles[i] = l.Title
+	}
+	r.hub.Lines(sess.ID, titles)
+
+	// Phase 3: run all lines in parallel.
+	results := make([]LineResult, len(lines))
+	var wg sync.WaitGroup
+	for i, line := range lines {
+		wg.Add(1)
+		go func(i int, line Line) {
+			defer wg.Done()
+			r.hub.Status(sess.ID, "Линия: "+line.Title)
+			results[i] = runLine(ctx, sess, line, r.llm, r.exa, r.hub)
+		}(i, line)
+	}
+	wg.Wait()
+
+	// Phase 4: synthesize the line summaries.
+	return r.synthesize(ctx, sess, lines, results)
+}
+
+// prePlan runs a short tool-calling loop where the lead agent may ask the user
+// a question before research lines start.
+func (r *Researcher) prePlan(ctx context.Context, sess *research.Session) error {
 	params := openai.ChatCompletionNewParams{
 		Model: openai.ChatModel(r.llm.Model()),
 		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage(researcherSystemPrompt),
+			openai.SystemMessage(leadSystemPrompt),
 			openai.UserMessage(fmt.Sprintf("Research brief:\n%s", sess.Brief)),
 		},
 		Tools: []openai.ChatCompletionToolUnionParam{
-			openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
-				Name:        "search_tool",
-				Description: openai.String("Search the web for information. Returns results with title, url, and text."),
-				Parameters: openai.FunctionParameters{
-					"type": "object",
-					"properties": map[string]any{
-						"query": map[string]string{"type": "string", "description": "the search query"},
-					},
-					"required": []string{"query"},
-				},
-			}),
-			openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
-				Name:        "read_tool",
-				Description: openai.String("Read a specific web page. Returns the page text."),
-				Parameters: openai.FunctionParameters{
-					"type": "object",
-					"properties": map[string]any{
-						"url": map[string]string{"type": "string", "description": "the page URL to read"},
-					},
-					"required": []string{"url"},
-				},
-			}),
-			openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
-				Name:        "add_finding_tool",
-				Description: openai.String("Record a factual finding tied to its source URL. Call this whenever you learn a concrete fact from a search result or a read page."),
-				Parameters: openai.FunctionParameters{
-					"type": "object",
-					"properties": map[string]any{
-						"fact": map[string]string{"type": "string", "description": "the factual statement"},
-						"url":  map[string]string{"type": "string", "description": "the source URL this fact came from"},
-					},
-					"required": []string{"fact", "url"},
-				},
-			}),
 			openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
 				Name:        "ask_user_tool",
 				Description: openai.String("Ask the user a question when you hit a fork you cannot decide yourself. Use sparingly."),
@@ -112,11 +114,11 @@ func (r *Researcher) Run(ctx context.Context, sess *research.Session) (string, e
 			}),
 			openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
 				Name:        "finish_tool",
-				Description: openai.String("Finish research. Provide a short summary of what you found and what you could NOT find out."),
+				Description: openai.String("Finish planning and start the research lines."),
 				Parameters: openai.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
-						"summary": map[string]string{"type": "string", "description": "summary of findings and gaps"},
+						"summary": map[string]string{"type": "string", "description": "short summary of the plan"},
 					},
 					"required": []string{"summary"},
 				},
@@ -125,138 +127,69 @@ func (r *Researcher) Run(ctx context.Context, sess *research.Session) (string, e
 	}
 
 	client := r.llm.RawClient()
-
 	for {
 		if sess.Expired() {
-			r.hub.Status(rt.sid, "⏱ Время исследования вышло, завершаю.")
-			break
+			return nil
 		}
-		if sess.SearchesUsed() >= sess.MaxSearches {
-			r.hub.Status(rt.sid, "Достигнут лимит поисков, завершаю.")
-			break
-		}
-
 		completion, err := client.Chat.Completions.New(ctx, params, option.WithJSONSet("thinking", map[string]string{"type": "disabled"}))
 		if err != nil {
-			return "", fmt.Errorf("researcher completion: %w", err)
+			return fmt.Errorf("lead completion: %w", err)
 		}
 		if len(completion.Choices) == 0 {
-			return "", fmt.Errorf("researcher: no choices")
+			return fmt.Errorf("lead: no choices")
 		}
 		msg := completion.Choices[0].Message
 		params.Messages = append(params.Messages, msg.ToParam())
 
 		if len(msg.ToolCalls) == 0 {
-			// No tool calls: agent is done (or just talking). Treat as finish.
-			r.hub.Status(rt.sid, "Исследователь завершил работу.")
-			return msg.Content, nil
+			return nil
 		}
-
 		for _, tc := range msg.ToolCalls {
 			if tc.Function.Name == "finish_tool" {
+				return nil
+			}
+			if tc.Function.Name == "ask_user_tool" {
 				var args struct {
-					Summary string `json:"summary"`
+					Question string `json:"question"`
 				}
 				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
-				r.hub.Status(rt.sid, "Исследователь завершил работу.")
-				return args.Summary, nil
+				r.hub.Question(sess.ID, args.Question)
+				ans, err := sess.AskUser(ctx, args.Question)
+				if err != nil {
+					return err
+				}
+				params.Messages = append(params.Messages, openai.ToolMessage("User answered: "+ans, tc.ID))
+				continue
 			}
-
-			result, err := rt.execute(ctx, tc)
-			if err != nil {
-				r.hub.Error(rt.sid, fmt.Sprintf("Инструмент %s: %v", tc.Function.Name, err))
-				result = fmt.Sprintf("error: %v", err)
-			}
-			params.Messages = append(params.Messages, openai.ToolMessage(result, tc.ID))
+			params.Messages = append(params.Messages, openai.ToolMessage(fmt.Sprintf("error: unknown tool %q", tc.Function.Name), tc.ID))
 		}
-	}
-
-	return "Research stopped by limits.", nil
-}
-
-func (rt *researcherTools) execute(ctx context.Context, tc openai.ChatCompletionMessageToolCallUnion) (string, error) {
-	switch tc.Function.Name {
-	case "search_tool":
-		var args struct {
-			Query string `json:"query"`
-		}
-		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-			return "", fmt.Errorf("parse search args: %w", err)
-		}
-		rt.sess.IncSearch()
-		rt.hub.Search(rt.sid, args.Query)
-
-		results, err := rt.exa.Search(ctx, args.Query)
-		if err != nil {
-			return "", err
-		}
-		var sb strings.Builder
-		for i, res := range results {
-			fmt.Fprintf(&sb, "[%d] %s\nURL: %s\n%s\n\n", i+1, res.Title, res.URL, truncate(res.Text, 1500))
-		}
-		return sb.String(), nil
-
-	case "read_tool":
-		var args struct {
-			URL string `json:"url"`
-		}
-		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-			return "", fmt.Errorf("parse read args: %w", err)
-		}
-		if rt.sess.AlreadyRead(args.URL) {
-			return "This page was already read. Choose a different page.", nil
-		}
-		if rt.sess.PagesRead() >= rt.sess.MaxPagesRead {
-			return "Page read limit reached. Do not read more pages.", nil
-		}
-		rt.sess.MarkRead(args.URL)
-		rt.hub.Read(rt.sid, args.URL)
-
-		text, err := tools.FetchPage(ctx, args.URL)
-		if err != nil {
-			return "", err
-		}
-		return text, nil
-
-	case "ask_user_tool":
-		var args struct {
-			Question string `json:"question"`
-		}
-		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-			return "", fmt.Errorf("parse ask args: %w", err)
-		}
-		rt.hub.Question(rt.sid, args.Question)
-		ans, err := rt.sess.AskUser(ctx, args.Question)
-		if err != nil {
-			return "", err
-		}
-		return "User answered: " + ans, nil
-
-	case "add_finding_tool":
-		var args struct {
-			Fact string `json:"fact"`
-			URL  string `json:"url"`
-		}
-		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-			return "", fmt.Errorf("parse finding args: %w", err)
-		}
-		args.Fact = strings.TrimSpace(args.Fact)
-		args.URL = strings.TrimSpace(args.URL)
-		if args.Fact == "" || args.URL == "" {
-			return "error: both fact and url are required", nil
-		}
-		rt.sess.AddFinding(args.Fact, args.URL)
-		rt.hub.Finding(rt.sid, args.Fact)
-		return "Finding recorded.", nil
-
-	default:
-		return "", fmt.Errorf("unknown tool %q", tc.Function.Name)
 	}
 }
 
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
+// synthesize combines all line summaries into one coherent picture.
+func (r *Researcher) synthesize(ctx context.Context, sess *research.Session, lines []Line, results []LineResult) (string, error) {
+	var sb strings.Builder
+	sb.WriteString("Research brief:\n")
+	sb.WriteString(sess.Brief)
+	sb.WriteString("\n\nLine summaries:\n")
+	for i, res := range results {
+		title := ""
+		if i < len(lines) {
+			title = lines[i].Title
+		}
+		sb.WriteString(fmt.Sprintf("--- Line %d: %s ---\n", i+1, title))
+		if res.Err != nil {
+			sb.WriteString("(line failed: " + res.Err.Error() + ")\n")
+			continue
+		}
+		sb.WriteString(res.Summary)
+		sb.WriteString("\n")
 	}
-	return s[:n] + "…"
+
+	synthesis, err := r.llm.Chat(ctx, synthesisSystemPrompt, sb.String())
+	if err != nil {
+		return "", fmt.Errorf("synthesis: %w", err)
+	}
+	sess.Synthesis = synthesis
+	return synthesis, nil
 }

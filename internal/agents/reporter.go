@@ -39,6 +39,10 @@ func (r *Reporter) Write(ctx context.Context, sess *research.Session) (string, e
 	var sb strings.Builder
 	sb.WriteString("## Бриф\n\n")
 	sb.WriteString(sess.Brief)
+	if sess.Synthesis != "" {
+		sb.WriteString("\n\n## Синтез линий\n\n")
+		sb.WriteString(sess.Synthesis)
+	}
 	sb.WriteString("\n\n## Находки\n\n")
 	for i, f := range findings {
 		fmt.Fprintf(&sb, "%d. %s — %s\n", i+1, f.Fact, f.URL)

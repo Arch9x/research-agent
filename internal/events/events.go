@@ -18,6 +18,7 @@ const (
 	TypeDone      = "done"      // research finished
 	TypeClarify   = "clarify"   // clarifying questions phase
 	TypeBrief     = "brief"     // research brief ready
+	TypeLines     = "lines"     // research decomposed into lines
 )
 
 type Event struct {
@@ -114,4 +115,8 @@ func (h *Hub) Clarify(sessionID string, questions []string) {
 
 func (h *Hub) Brief(sessionID, brief string) {
 	h.Publish(sessionID, Event{Type: TypeBrief, Message: brief})
+}
+
+func (h *Hub) Lines(sessionID string, titles []string) {
+	h.Publish(sessionID, Event{Type: TypeLines, Data: titles})
 }
