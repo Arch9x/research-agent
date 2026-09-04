@@ -303,136 +303,257 @@ const indexHTML = `<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Research Agent</title>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #0f1115; color: #e6e6e6; }
-  h1 { font-size: 1.5rem; }
-  input[type=text] { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #333; background: #1a1d24; color: #e6e6e6; }
-  button { padding: 10px 18px; border-radius: 6px; border: none; background: #4f8cff; color: #fff; cursor: pointer; }
-  button:disabled { opacity: .5; cursor: default; }
-  #feed { margin-top: 20px; }
-  .ev { padding: 8px 12px; margin: 4px 0; border-radius: 6px; background: #1a1d24; border-left: 3px solid #4f8cff; }
-  .ev.search { border-left-color: #ffb84f; }
-  .ev.read { border-left-color: #7bd88f; }
-  .ev.finding { border-left-color: #c58bff; }
-  .ev.question { border-left-color: #ff6b6b; }
-  .ev.error { border-left-color: #ff4444; }
-  .ev.report { border-left-color: #4f8cff; background: #1d2433; }
-  .ev .t { font-size: .75rem; color: #888; }
-  #questions { margin-top: 20px; }
-  .q { padding: 10px; margin: 6px 0; background: #1a1d24; border-radius: 6px; }
-  #report { margin-top: 20px; white-space: pre-wrap; background: #1d2433; padding: 16px; border-radius: 8px; }
-  #reports { margin-top: 20px; }
-  #reports a { color: #4f8cff; display: block; margin: 4px 0; }
-  .hidden { display: none; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #0f1115; color: #e6e6e6; height: 100vh; display: flex; }
+  #sidebar { width: 280px; min-width: 280px; background: #14171d; border-right: 1px solid #23272f; display: flex; flex-direction: column; }
+  #sidebar h1 { font-size: 1.1rem; margin: 16px 16px 8px; }
+  #sidebar .sub { font-size: .75rem; color: #888; margin: 0 16px 12px; }
+  #newBtn { margin: 0 16px 12px; padding: 10px; border-radius: 8px; border: none; background: #4f8cff; color: #fff; cursor: pointer; font-size: .9rem; }
+  #newBtn:hover { background: #3d7bf0; }
+  #reports { flex: 1; overflow-y: auto; padding: 0 8px 16px; }
+  #reports h3 { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; color: #888; margin: 8px 8px; }
+  .rep-item { display: block; width: 100%; text-align: left; background: none; border: none; color: #c9d1d9; padding: 8px; border-radius: 6px; cursor: pointer; font-size: .85rem; }
+  .rep-item:hover { background: #1d2129; }
+  .rep-item .t { display: block; font-size: .7rem; color: #777; margin-top: 2px; }
+  #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #chat { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { max-width: 720px; padding: 12px 16px; border-radius: 12px; line-height: 1.5; font-size: .95rem; white-space: pre-wrap; word-wrap: break-word; }
+  .msg.user { align-self: flex-end; background: #2b3a55; border-bottom-right-radius: 4px; }
+  .msg.assistant { align-self: flex-start; background: #1a1d24; border-bottom-left-radius: 4px; }
+  .msg.assistant .md { white-space: normal; }
+  .msg.assistant .md h1, .msg.assistant .md h2, .msg.assistant .md h3 { margin: .6em 0 .3em; }
+  .msg.assistant .md p { margin: .4em 0; }
+  .msg.assistant .md ul, .msg.assistant .md ol { margin: .4em 0; padding-left: 1.4em; }
+  .msg.assistant .md a { color: #7aa7ff; }
+  .msg.assistant .md code { background: #23272f; padding: 1px 5px; border-radius: 4px; font-size: .85em; }
+  .msg.assistant .md pre { background: #23272f; padding: 10px; border-radius: 8px; overflow-x: auto; }
+  .msg.assistant .md blockquote { border-left: 3px solid #4f8cff; margin: .4em 0; padding-left: 12px; color: #aaa; }
+  .msg.assistant .md table { border-collapse: collapse; margin: .5em 0; }
+  .msg.assistant .md th, .msg.assistant .md td { border: 1px solid #333; padding: 6px 10px; }
+  .typing { display: inline-flex; gap: 4px; align-items: center; }
+  .typing span { width: 7px; height: 7px; border-radius: 50%; background: #888; animation: blink 1.2s infinite; }
+  .typing span:nth-child(2) { animation-delay: .2s; }
+  .typing span:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+  .q-input { display: flex; gap: 8px; margin-top: 10px; }
+  .q-input input { flex: 1; padding: 10px 12px; border-radius: 8px; border: 1px solid #333; background: #14171d; color: #e6e6e6; font-size: .9rem; }
+  .q-input input:focus { outline: none; border-color: #4f8cff; }
+  .q-input button { padding: 10px 16px; border-radius: 8px; border: none; background: #4f8cff; color: #fff; cursor: pointer; font-size: .9rem; }
+  .q-input button:disabled { opacity: .5; cursor: default; }
+  #composer { padding: 16px 24px; border-top: 1px solid #23272f; background: #0f1115; }
+  #composer form { display: flex; gap: 8px; max-width: 720px; margin: 0 auto; }
+  #composer input { flex: 1; padding: 12px 14px; border-radius: 10px; border: 1px solid #333; background: #14171d; color: #e6e6e6; font-size: .95rem; }
+  #composer input:focus { outline: none; border-color: #4f8cff; }
+  #composer button { padding: 12px 20px; border-radius: 10px; border: none; background: #4f8cff; color: #fff; cursor: pointer; font-size: .95rem; }
+  #composer button:disabled { opacity: .5; cursor: default; }
+  .hidden { display: none !important; }
+  .empty { color: #666; text-align: center; margin-top: 20vh; font-size: .95rem; }
 </style>
 </head>
 <body>
-<h1>Research Agent</h1>
-<div>
-  <input type="text" id="topic" placeholder="Введите тему исследования, например: стоит ли переезжать с REST на gRPC">
-  <button id="startBtn">Исследовать</button>
+<div id="sidebar">
+  <h1>Research Agent</h1>
+  <div class="sub">Мини-Perplexity</div>
+  <button id="newBtn">Новое исследование</button>
+  <div id="reports"><h3>Прошлые отчёты</h3></div>
 </div>
-<div id="questions" class="hidden"></div>
-<div id="feed"></div>
-<div id="report" class="hidden"></div>
-<div id="reports"></div>
+<div id="main">
+  <div id="chat"></div>
+  <div id="composer">
+    <form id="composerForm">
+      <input type="text" id="topic" placeholder="Введите тему исследования, например: стоит ли переезжать с REST на gRPC" autocomplete="off">
+      <button id="startBtn" type="submit">Исследовать</button>
+    </form>
+  </div>
+</div>
 
 <script>
-const feed = document.getElementById('feed');
-const reportEl = document.getElementById('report');
-const questionsEl = document.getElementById('questions');
-const startBtn = document.getElementById('startBtn');
+const chat = document.getElementById('chat');
+const composerForm = document.getElementById('composerForm');
 const topicEl = document.getElementById('topic');
-let sessionId = null;
-let pendingQuestions = [];
+const startBtn = document.getElementById('startBtn');
+const newBtn = document.getElementById('newBtn');
+const reportsEl = document.getElementById('reports');
 
-function addEvent(type, message, data) {
+let sessionId = null;
+let es = null;
+let busy = false;
+let pendingQuestions = [];
+let questionIdx = 0;
+let awaitingAnswer = false;
+
+function addMsg(role, html) {
   const div = document.createElement('div');
-  div.className = 'ev ' + type;
-  const t = document.createElement('div');
-  t.className = 't';
-  t.textContent = new Date().toLocaleTimeString();
-  div.appendChild(t);
-  const m = document.createElement('div');
-  m.textContent = message || '';
-  div.appendChild(m);
-  if (data && type === 'report') {
-    const r = document.createElement('div');
-    r.textContent = data;
-    div.appendChild(r);
-  }
-  feed.appendChild(div);
-  feed.scrollTop = feed.scrollHeight;
+  div.className = 'msg ' + role;
+  div.innerHTML = html;
+  chat.appendChild(div);
+  scrollToBottom();
+  return div;
 }
 
-function showQuestions(questions) {
-  pendingQuestions = questions;
-  questionsEl.innerHTML = '';
-  questionsEl.classList.remove('hidden');
-  questions.forEach((q, i) => {
-    const div = document.createElement('div');
-    div.className = 'q';
-    div.textContent = (i+1) + '. ' + q;
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.placeholder = 'Ваш ответ...';
-    input.dataset.idx = i;
-    div.appendChild(input);
-    questionsEl.appendChild(div);
-  });
+function addUserMsg(text) {
+  const div = document.createElement('div');
+  div.className = 'msg user';
+  div.textContent = text;
+  chat.appendChild(div);
+  scrollToBottom();
+  return div;
+}
+
+function addAssistantMsg(html) {
+  const div = document.createElement('div');
+  div.className = 'msg assistant';
+  div.innerHTML = html;
+  chat.appendChild(div);
+  scrollToBottom();
+  return div;
+}
+
+function addTyping() {
+  const div = document.createElement('div');
+  div.className = 'msg assistant';
+  div.innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
+  chat.appendChild(div);
+  scrollToBottom();
+  return div;
+}
+
+function scrollToBottom() {
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function renderMarkdown(md) {
+  if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+    return DOMPurify.sanitize(marked.parse(md));
+  }
+  const div = document.createElement('div');
+  div.textContent = md;
+  return div.innerHTML;
+}
+
+function showQuestion(q, total) {
+  awaitingAnswer = true;
+  const div = addAssistantMsg('<div>Вопрос ' + questionIdx + ' из ' + total + '</div><div>' + escapeHtml(q) + '</div>');
+  const row = document.createElement('div');
+  row.className = 'q-input';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = 'Ваш ответ...';
+  input.autocomplete = 'off';
   const btn = document.createElement('button');
   btn.textContent = 'Ответить';
-  btn.onclick = async () => {
-    const inputs = questionsEl.querySelectorAll('input');
-    for (const inp of inputs) {
-      const ans = inp.value.trim();
-      if (!ans) { alert('Ответьте на все вопросы'); return; }
-      await fetch('/api/answer', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({id: sessionId, text: ans})
-      });
+  btn.disabled = true;
+  input.addEventListener('input', () => { btn.disabled = !input.value.trim(); });
+  const submit = async () => {
+    const ans = input.value.trim();
+    if (!ans) return;
+    input.disabled = true;
+    btn.disabled = true;
+    addUserMsg(ans);
+    await fetch('/api/answer', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: sessionId, text: ans})
+    });
+    questionIdx++;
+    if (questionIdx < pendingQuestions.length) {
+      showQuestion(pendingQuestions[questionIdx], pendingQuestions.length);
+    } else {
+      awaitingAnswer = false;
+      pendingQuestions = [];
+      questionIdx = 0;
+      addTyping();
     }
-    questionsEl.classList.add('hidden');
-    questionsEl.innerHTML = '';
   };
-  questionsEl.appendChild(btn);
+  btn.onclick = submit;
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  row.appendChild(input);
+  row.appendChild(btn);
+  div.appendChild(row);
+  input.focus();
+}
+
+function escapeHtml(s) {
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+function setBusy(b) {
+  busy = b;
+  startBtn.disabled = b;
+  topicEl.disabled = b;
+}
+
+function resetChat() {
+  chat.innerHTML = '';
+  const empty = document.createElement('div');
+  empty.className = 'empty';
+  empty.textContent = 'Введите тему исследования ниже.';
+  chat.appendChild(empty);
 }
 
 async function start() {
   const topic = topicEl.value.trim();
-  if (!topic) return;
-  startBtn.disabled = true;
-  feed.innerHTML = '';
-  reportEl.classList.add('hidden');
+  if (!topic || busy) return;
+  setBusy(true);
+  chat.innerHTML = '';
+  addUserMsg(topic);
+  topicEl.value = '';
   const res = await fetch('/api/start', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({topic})
   });
+  if (!res.ok) {
+    addAssistantMsg('<div>Не удалось начать исследование.</div>');
+    setBusy(false);
+    return;
+  }
   const data = await res.json();
   sessionId = data.id;
   connectSSE();
 }
 
 function connectSSE() {
-  const es = new EventSource('/api/events?session=' + encodeURIComponent(sessionId));
+  if (es) es.close();
+  es = new EventSource('/api/events?session=' + encodeURIComponent(sessionId));
   es.onmessage = (e) => {
     const ev = JSON.parse(e.data);
     switch (ev.type) {
-      case 'clarify': showQuestions(ev.data); break;
-      case 'question': addEvent('question', '❓ ' + ev.message); break;
+      case 'clarify':
+        pendingQuestions = ev.data || [];
+        questionIdx = 0;
+        if (pendingQuestions.length > 0) {
+          showQuestion(pendingQuestions[0], pendingQuestions.length);
+        } else {
+          addTyping();
+        }
+        break;
+      case 'question':
+        if (!awaitingAnswer) {
+          pendingQuestions = [ev.message];
+          questionIdx = 0;
+          showQuestion(ev.message, 1);
+        }
+        break;
       case 'report':
-        reportEl.textContent = ev.data;
-        reportEl.classList.remove('hidden');
+        addAssistantMsg('<div class="md">' + renderMarkdown(ev.data) + '</div>');
         break;
       case 'done':
         es.close();
-        startBtn.disabled = false;
+        es = null;
+        setBusy(false);
         loadReports();
         break;
+      case 'error':
+        addAssistantMsg('<div>⚠️ ' + escapeHtml(ev.message || 'Ошибка') + '</div>');
+        break;
       default:
-        addEvent(ev.type, ev.message, ev.data);
+        break;
     }
   };
   es.onerror = () => { /* keep alive */ };
@@ -440,24 +561,42 @@ function connectSSE() {
 
 async function loadReports() {
   const res = await fetch('/api/reports');
+  if (!res.ok) return;
   const reports = await res.json();
-  const el = document.getElementById('reports');
-  el.innerHTML = '<h3>Прошлые отчёты</h3>';
+  reportsEl.innerHTML = '<h3>Прошлые отчёты</h3>';
+  if (reports.length === 0) {
+    const d = document.createElement('div');
+    d.className = 'rep-item';
+    d.textContent = 'Пока пусто';
+    reportsEl.appendChild(d);
+    return;
+  }
   reports.forEach(r => {
-    const a = document.createElement('a');
-    a.href = '#';
-    a.textContent = new Date(r.created_at).toLocaleString() + ' — ' + r.topic;
-    a.onclick = (e) => {
-      e.preventDefault();
-      reportEl.textContent = r.markdown;
-      reportEl.classList.remove('hidden');
+    const b = document.createElement('button');
+    b.className = 'rep-item';
+    const t = document.createElement('span');
+    t.className = 't';
+    t.textContent = new Date(r.created_at).toLocaleString();
+    b.appendChild(document.createTextNode(r.topic));
+    b.appendChild(t);
+    b.onclick = () => {
+      chat.innerHTML = '';
+      addUserMsg(r.topic);
+      addAssistantMsg('<div class="md">' + renderMarkdown(r.markdown) + '</div>');
     };
-    el.appendChild(a);
+    reportsEl.appendChild(b);
   });
 }
 
-startBtn.onclick = start;
-topicEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') start(); });
+composerForm.addEventListener('submit', (e) => { e.preventDefault(); start(); });
+newBtn.onclick = () => {
+  if (es) { es.close(); es = null; }
+  sessionId = null;
+  setBusy(false);
+  resetChat();
+  topicEl.focus();
+};
+resetChat();
 loadReports();
 </script>
 </body>
