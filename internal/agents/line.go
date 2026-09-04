@@ -50,6 +50,7 @@ func runLine(ctx context.Context, sess *research.Session, line Line, llm *llm.Cl
 		Model: openai.ChatModel(llm.Model()),
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage(fmt.Sprintf(lineSystemPrompt, line.Question)),
+			openai.UserMessage("Research line: " + line.Question),
 		},
 		Tools: lineTools(),
 	}
