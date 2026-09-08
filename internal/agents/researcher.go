@@ -28,9 +28,10 @@ Rules:
 
 Respond by calling tools. Do not write prose outside tool calls.`
 
-const synthesisSystemPrompt = `You are the lead research agent. Sub-agents have investigated several research lines and returned their summaries. Synthesize them into one coherent picture.
+const synthesisSystemPrompt = `You are the lead research agent. Sub-agents have investigated several research lines and returned their summaries, and the collected findings (fact + source URL) are listed below. Synthesize them into one coherent picture.
 
 Rules:
+- Base your synthesis on BOTH the line summaries AND the collected findings. The findings are the ground truth — use them even if a line summary is thin or says it stopped by limits.
 - Summarize what is known across all lines.
 - Highlight contradictions explicitly: "X claims ..., but Y shows ...".
 - List what could NOT be determined (gaps).
@@ -166,7 +167,8 @@ func (r *Researcher) prePlan(ctx context.Context, sess *research.Session) error 
 	}
 }
 
-// synthesize combines all line summaries into one coherent picture.
+// synthesize combines all line summaries and collected findings into one
+// coherent picture.
 func (r *Researcher) synthesize(ctx context.Context, sess *research.Session, lines []Line, results []LineResult) (string, error) {
 	var sb strings.Builder
 	sb.WriteString("Research brief:\n")
@@ -184,6 +186,16 @@ func (r *Researcher) synthesize(ctx context.Context, sess *research.Session, lin
 		}
 		sb.WriteString(res.Summary)
 		sb.WriteString("\n")
+	}
+
+	// Findings collected by the line sub-agents. These are the ground truth
+	// even when a line stopped by limits and returned a thin summary.
+	findings := sess.FindingsSnapshot()
+	if len(findings) > 0 {
+		sb.WriteString("\nCollected findings (fact — source URL):\n")
+		for i, f := range findings {
+			fmt.Fprintf(&sb, "%d. %s — %s\n", i+1, f.Fact, f.URL)
+		}
 	}
 
 	synthesis, err := r.llm.Chat(ctx, synthesisSystemPrompt, sb.String())
